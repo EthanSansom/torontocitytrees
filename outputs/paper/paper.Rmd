@@ -1,0 +1,396 @@
+---
+title: "Toronto's Street Trees are Disproportionatly Concentrated within the City's Most Affluent Wards"
+author: "Ethan Sansom"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  bookdown::pdf_document2:
+toc: yes
+abstract: "City owned urban trees are important pieces of public infrastructure which provide significant economic, environmental, and health benefits to the areas they populate. In large Canadian cities, however, the urban forest is disproportionately concentrated within wealthier neighborhoods, at the expense of lower income citizens. In this paper, the distribution of street trees across Toronto’s 25 municipal voting wards is analyzed to further investigate the relationship between neighborhood wealth and concentration of urban trees. Toronto’s wealthiest wards are found to consistently have more trees per square kilometer than Toronto's poorest wards, and to have a greater concentration of large trees."
+thanks: "Code and data are available at: https://github.com/EthanSansom/torontocitytrees"
+bibliography: references.bib
+---
+
+```{r setup, echo=FALSE, message=FALSE, warning=FALSE}
+#### Load Packages ####
+library(tidyverse)
+library(knitr)
+library(dplyr)
+library(ggplot2)
+library(sf)           # For graphing maps using Polygon objects
+library(scattermore)  # For graphing very large numbers of points
+library(here)         # For referencing files in directory
+library(kableExtra)   # For formatting tables
+library(bookdown)     # For cross referencing
+
+#### Load Data ####
+toronto_tree_data <- read_csv(here("inputs/data/clean_tree_data.csv"))
+ward_map_data <- read_rds(here("inputs/data/clean_ward_map_data.rds"))
+```
+
+```{r missingdiamter, include = FALSE}
+#### Get the number of missing tree diameter observations by ward ####
+missing_diameter_data <-
+  toronto_tree_data |>
+  filter(is.na(trunk_diameter)) |>
+  group_by(ward) |>
+  summarise(
+    num_missing_diameter = n()
+  )
+```
+
+# Introduction
+Toronto’s urban forest, comprised of an estimated 10.2 million trees, provides the Toronto public with a number of significant economic, environmental, and health benefits [@urbanforestry]. The city’s tree canopy contributes to the reduction of air pollution via the natural sequestration of carbon dioxide in the atmosphere [@urbanforestry; @Greene]. Further, residential street trees reduce the amount of home energy use, by providing homes shade and a windbreak, both of which mitigate the need for electric cooling or heating  [@urbanforestry; @Greene]. The estimated economic benefit of these ecological services to the city is over $28.2 million dollars [@urbanforestry]. Alongside the reduction of air pollution related illnesses, Toronto’s city trees also provide life saving shade to city residents [@Graham]. In a study of heat related ambulance calls in Toronto, @Graham found that heat related deaths during extreme heat events were reduced by 80% in areas with greater than 5% tree canopy coverage.
+
+In North America, the substantial public benefits of urban trees are disproportionately afforded to wealthy communities. Wealthy residents in U.S. cities were found to have nearly 50% more greenery surrounding their homes than poor residents [@Leahy]. In a study of four major urban areas in Canada, Ottawa, Toronto, Montreal, and Quebec City, authors @Landry found that a neighborhood's diversity of urban trees was inversely related with measures of social vulnerability. 
+
+To further investigate the relationship between socioeconomic status and urban tree coverage in the Canadian context, this paper will analyze Urban Forestry data on the location and size of Toronto’s city-owned street trees. In particular, the paper considers the number and density of street trees in each of Toronto’s 25 municipal voting wards. Using 2016 Census data, the relationship between average household income and the prevalence of small, large, and total street trees by ward will be discussed. For the analysis, the R statistical software [@citeR] will be used to load, clean, and visualize this data. The `tidyverse` [@citetidyverse] and `dplyr` [@citedplyr] packages are used for data manipulation, the `stringr` [@citestringr] package for text processing, and the `janitor`  [@citejanitor] package for data cleaning. Packages `ggplot2` [@citeggplot2] and `kableExtra`  [@citekableExtra] are primarily used to generate tables and graphs. Additionally, the `sf`  [@citesf] package is used to graph City of Toronto maps and the `scattermore`  [@citescattermore] package to plot the coordinates of street trees. Packages `bookdown` [@citebookdown], `knitr` [@citeknitr], and `tinytex` [@citetinytex] are used for formatting and compiling the paper. Finally, the package `here`  [@citehere] is used to manage file paths.
+
+# Data
+
+## City-Owned Street Tree Data
+
+This paper utilizes the Street Tree dataset [@treedata] from the Toronto Open Data portal, imported via the `opendatatoronto` package [@citeopendatatoronto]. At the time of this analysis, the dataset contains 662,152 observations of unique street adjacent trees owned by the City of Toronto [@treedata]. The data is used primarily for inspection and maintenance purposes by Toronto’s Urban Forestry staff, and was compiled over several years of inspections. Recorded tree data includes a unique identifier for each street tree, names of adjacent streets and nearby parks (if applicable), the coordinate (latitude and longitude) of the tree, the municipal voting ward the tree falls within, the tree’s common name, and the tree’s diameter in inches, measured at 1.3 meters height [@treedata].
+
+\newpage
+
+```{r treedatasample, fig.cap = "Sample Street Tree Data", echo=FALSE, message=FALSE, warning=FALSE}
+
+head(toronto_tree_data, 5) |>
+  knitr::kable(
+    align = "ccccccc",
+    col.names = c(
+      "Tree ID",
+      "Ward Number",
+      "Trunk Diameter",
+      "Longitude",
+      "Latitude",
+      "Is Large",
+      "Is Small"
+      ),
+    booktabs = TRUE,
+    escape = FALSE,
+    caption = "Sample Street Tree Data"
+  ) |>
+  
+  # Adjust font size
+  kableExtra::kable_styling(font_size = 10)
+```
+
+Above is a sample of the Street Tree data used in this paper. To simplify the analysis of the trees’ geographic distribution, longitude and latitudes are kept in favour of less precise location indicators, such as street names. Further, to limit the scope of this analysis, tree species is not considered, although this is a relevant avenue for future discussion of government tree allocation. Relatively few observations are missing from the dataset. Two observations of tree ward location are missing, both of which are not included in this analysis. Further, 3473 observations of tree diameter are either missing or 0. These observations are excluded from all analysis and calculations based on tree diameter, but are used to plot the geographical distribution of Toronto’s street trees. As these missing observations are not concentrated in any specific set of wards ^[see Additional Tables \ref{tab:wardnames}], they are not expected to drastically impact the conclusions of this investigation.
+
+Table \ref{tab:treedatasample} includes two True/False variables, *Is Small* and *Is Large*, which indicate respectively whether a tree’s diameter is below the 25th percentile or above the 75th percentile of all observed tree diameters. The motivation for including these variables is twofold. First, the Street Tree dataset does not include the date at which trees are planted. Instead, tree size can be used as a proxy for tree age, the assumption being that older trees are on average larger and younger trees on average smaller. Second, tree size is a determinant of tree value, larger trees providing greater environmental benefits, such as increased air quality, and economic benefits, such as reduced home cooling costs and shade coverage, than smaller trees [@urbanforestry].
+
+## Ward Geography Data
+
+To supplement the Street Tree data, this paper also utilizes the City Wards
+dataset [@warddata], retrieved via the `opendatatoronto`  [@citeopendatatoronto] package.   This dataset includes the boundaries of Toronto’s 25 municipal voting wards, as well as their names and numeric codes. A sample view of the dataset is shown below.
+
+```{r mapdatasample, fig.cap = "Sample City Ward Data", echo=FALSE, message=FALSE, warning=FALSE}
+head(ward_map_data, 5) |>
+  mutate_if(is.numeric, round, 2) |> # Round numeric variables for cleaner table
+  kable(
+    align = "llcclc",
+    col.names = c(
+      "Ward Number",
+      "Ward Name",
+      "Longitude",
+      "Latitude",
+      "Geometry",
+      "Area"
+      ),
+    booktabs = TRUE,
+    escape = FALSE,
+    caption = "Sample City Ward Data"
+  ) |>
+  
+  # Adjust font size  and fix table position
+  kable_styling(font_size = 10, latex_options = "hold_position")
+```
+
+The *Latitude* and *Longitude* variables provide the rough center of each ward, while the *Geometry* variable contains the boundaries of each ward, defined by a set of coordinates (latitude and longitude). *Area* is the area of each ward in square kilometers, calculated using the *Geometry* variable and the `sf` [@citesf] package for manipulating shape objects.
+
+\newpage
+
+## Data Analysis
+
+Figure \@ref(fig:treepoints) provides a birds eye view of every street tree in Toronto, overlaid on a map of the city’s 25 municipal voting wards.
+
+```{r treepoints, fig.cap = "Toronto's Street Trees",echo=FALSE, message=FALSE, warning=FALSE}
+#### Plot all trees ####
+toronto_tree_data |>
+  ggplot() +
+  
+  # Plot the borders of each ward
+  geom_sf(data = ward_map_data$geometry, fill = "white", colour = "lightblue") +
+  
+  # Plot the location of each tree
+  geom_scattermore(
+    aes(x = longitude, y = latitude),
+    pointsize = 0,
+    pixels = c(2000, 2000),
+    colour = "lightblue"
+    ) +
+  
+  # Label the wards
+  geom_text(
+    data = ward_map_data,
+    aes(x = longitude, y = latitude, label = ward_name),
+    nudge_y = -0.005,
+    size = 1.75,
+    colour = "black"
+    ) +
+  
+  geom_point(
+    data = ward_map_data,
+    aes(x = longitude, y = latitude),
+    colour = "black",
+    size = 0.3
+    ) +
+  
+  # Label the graph
+  labs(
+    x = "Longitude", 
+    y = "Latitude"
+    ) +
+  
+  # Adjust theme
+  theme_classic()
+```
+
+Some immediate disparities in tree coverage are visible, particularly in Etobicoke North, Humber River-Black Creek, Spadina-Fort York, and Scarborough-Rouge Park, all of which have large expanses of little to no tree coverage. In contrast, wards surrounding Davenport, including Parkdale-High Park, Toronto-St. Paul’s, and University-Rosedale, are densely canopied with street trees. Additionally, Figure \@ref(fig:treepoints) displays the effects of large highways and roads, which displace urban forestry. The 401 Ontario Express Highway is visible as a straight line cutting through Scarborough-Agincourt and Scarborough North wards, as is Highway 2A through Scarborough-Guildwood.
+
+\newpage
+
+Table \@ref(tab:treetable) gives a more detailed description of the distribution of trees, summarizing the number and density of total, small, and large street trees by ward. Additionally, the average diameter of trees (given in inches) in each ward and ward area (in square kilometers) is provided.
+
+```{r treetable, fig.cap = "Number, Density, and Size of Street Tree by Ward", echo=FALSE, message=FALSE, warning=FALSE}
+#### Create table displaying tree frequency and size by ward ####
+# Get number of trees per ward and average tree diameter
+ward_trees <-
+  toronto_tree_data |>
+  group_by(ward) |>
+  summarize(
+    "number_trees" = n(),
+    "num_small_trees" = sum(is_small == TRUE, na.rm = TRUE),
+    "num_large_trees" = sum(is_large == TRUE, na.rm = TRUE),
+    "avg_tree_diameter" = mean(trunk_diameter, na.rm = TRUE)
+         )
+
+# Get the full ward name and ward area
+ward_trees <-
+  ward_trees |>
+  left_join(
+    y = ward_map_data,
+    by = "ward"
+    )
+
+# Get number of trees per kilometer squared and round area_kilometers_sq
+ward_trees <-
+  ward_trees |>
+  mutate(
+    number_trees_per_km_sq = number_trees / area_kilometers_sq,
+    num_small_trees_per_km_sq = num_small_trees / area_kilometers_sq,
+    num_large_trees_per_km_sq = num_large_trees/ area_kilometers_sq
+  )
+
+# Order columns
+ward_trees <-
+  ward_trees |>
+  select(
+    ward, ward_name, number_trees, num_small_trees, num_large_trees, 
+    number_trees_per_km_sq, num_small_trees_per_km_sq, num_large_trees_per_km_sq,
+    avg_tree_diameter, area_kilometers_sq, longitude, latitude, geometry
+    )
+
+# Round numeric variables for display (excluding latitude and longitude)
+ward_trees <-
+  ward_trees |>
+  mutate_at(
+    c(
+      "number_trees_per_km_sq", 
+      "num_small_trees_per_km_sq", 
+      "num_large_trees_per_km_sq",
+      "avg_tree_diameter", 
+      "area_kilometers_sq"
+    ), 
+  round, 2
+  )
+
+#### Create the table of by ward information ####
+ward_trees |>
+  
+  # Drop unneeded columns
+  select(-c(ward, longitude, latitude, geometry)) |>
+  
+  # Sort wards in order of tree density (most to least)
+  arrange(desc(number_trees_per_km_sq)) |> 
+  
+  # Create table
+  kable(
+    align = "lcccccccc", # left align first column, remaining center align
+    col.names = c(
+      "Ward",
+      "Total",
+      "Small",
+      "Large",
+      "Total",
+      "Small",
+      "Large",
+      "Diameter",
+      "Ward Area"),
+    booktabs = TRUE,
+    escape = FALSE,
+    caption = "Number, Density, and Size of Street Tree by Ward"
+  ) |>
+  
+  # Add column headers
+  add_header_above(
+    c(
+      " ",
+      "Number of Trees" = 3, 
+      "Number of Trees per\nSquare Kilometer" = 3, 
+      "Mean\nTree Size" = 1,
+      " "
+      ), 
+    align = "c"
+    ) |>
+  
+  # Adjust column width
+  column_spec(1, width = "11em") |>
+  column_spec(8, width = "5em") |>
+  column_spec(9, width = "5em") |>
+  
+  # Adjust font size and fix table position
+  kable_styling(font_size = 10, latex_options = "hold_position") |>
+  add_footnote("Diameter is measured in inches and Ward Area is measured in square kilometers.")
+```
+
+The three tree per square kilometer variables are obtained by dividing the number of total, small, and large tree counts in each ward by ward size in kilometers. As was apparent from Figure \@ref(fig:treepoints), Davenport, Willowdale, University-Rosedale, Parkdale-High Park, and Toronto-St. Paul’s are the five most densely street tree covered wards, and are among the top 10 most dense with small and large trees as well. Likewise, Scarborough-Rouge Park, Spadina-Fort York, Scarborough Centre, Scarborough Southwest, and Etobicoke North are the five least densely street tree covered wards. Notably, these wards are among the Toronto’s largest, while the five most tree covered wards are among its smallest, perhaps owing to the greater population density of Toronto’s smaller downtown wards.
+
+\newpage
+
+To investigate further, Figure \@ref(fig:treedensity) compares the number of total, small, and large street trees per square kilometer in each ward ^[For readability wards are labelled by ward number, see Additional Tables \@ref(tab:wardnames) for the corresponding ward names]. To maintain counts of a similar scale, the number of total trees per half-kilometer squared is compared alongside the number of small and large trees per kilometer squared in each ward.
+
+```{r treedensity, fig.cap = "Density of Total, Large, and Small Street Trees by Ward", echo=FALSE, message=FALSE, warning=FALSE}
+ward_trees |>
+  
+  # Scale down total number of trees to allow visual comparison of tree counts
+  mutate(number_trees_per_km_sq = number_trees_per_km_sq / 2**2) |>
+  
+  # Rename variables for plotting
+  rename(
+    "Large Trees per Square Kilometer" = num_large_trees_per_km_sq, 
+    "Small Trees per Square Kilometer" = num_small_trees_per_km_sq,
+    "Trees per Square Half-Kilometer" = number_trees_per_km_sq
+  ) |>
+  
+  # Pivot for easier faceting
+  pivot_longer(
+    cols = c(
+      "Large Trees per Square Kilometer", 
+      "Small Trees per Square Kilometer", 
+      "Trees per Square Half-Kilometer"
+      ),
+    names_to = "size",
+    values_to = "count"
+  ) |>
+
+  ggplot() +
+    geom_sf(aes(geometry = geometry, fill = count)) +
+    
+    # Change plot colors for better visibility
+    scale_fill_viridis_c(option = "viridis", begin = 0.3) +
+    
+    # Label wards, by number for better visibility
+    geom_text(
+      aes(x = longitude, y = latitude, label = ward),
+      size = 2,
+      colour = "black"
+      ) +
+  
+    # Create labels and title
+    labs(
+      x = "Longitude",
+      y = "Latitude",
+      fill = "Count"
+      ) +
+    
+    # Facet the graph to compare between distribution of small, large, and all trees
+    facet_wrap(~size, ncol = 2) +
+      
+    # Adjust theme
+    theme_light() +
+    theme(
+      strip.background = element_rect(fill = "white"), 
+      strip.text.x = element_text(color ="black", size = 8),
+      aspect.ratio = 0.75
+      )
+```
+
+As before, wards surrounding Davenport (Ward 9) have the greatest density of trees in all categories, while those near Humber River-Black Creek (Ward 7) and Scarborough-Guildwood (Ward 24) have the least. The variation in the density large trees is most pronounced. The ward densest in large trees, Toronto-St. Paul’s (Ward 12), contains 534.84 large street trees per square kilometer compared to Scarborough-Rouge Park (Ward 25), which has the fewest large trees per square kilometer, 81.69. The number of large street trees per square kilometer in Toronto-St. Paul’s is over 6 times that of Scarborough-Rouge Park, while the total number of streets trees per square kilometer in Toronto-St. Paul’s is just over 4 times that of Scarborough-Rouge Park.
+
+\newpage
+
+# Results
+
+## Wards with Lower Tree Density
+
+The five wards with the fewest trees per square kilometer are Scarborough-Rouge Park, Spadina-Fort York, Scarborough Centre, Scarborough Southwest, and Etobicoke North. Of these, Scarborough Centre and Etobicoke North respectively have the third and fifth lowest average household incomes in Toronto, according to 2016 Census data [@Census]. The average household making \$70,624 annually in Scarborough Centre and \$73,374 annually in Etobicoke North [@Census]. The remaining wards, Scarborough-Rouge Park, Spadina-Fort York, and Scarborough Southwest, respectively have the 15th, 18th, and 8th lowest average household incomes of Toronto’s 25 wards [@Census]. This provides a weak indication that poorer wards have a lower tree density, but is far from conclusive.
+
+## Wards with Lower Large Tree Density
+
+As indicated by Figure \@ref(fig:treedensity), the disparity between large tree density by wards is greater than that of overall tree density. Likewise, the relationship between large tree density and ward income appears stronger. Of the ten wards containing the least number of large trees per square kilometer, six are also within the ten wards with the lowest average household earnings [@Census]. Once again, Scarborough-Rough Park is an outlier, containing the fewest large street trees per square kilometer despite having the 11th highest average household income [@Census]. Notably, a large portion of the Scarborough-Rough Park ward is within the Rouge National Urban Park, Canada’s largest planned national park [@ParksCan]. The park, which contains no street trees, is likely to decrease the density of street trees in the ward overall.
+
+## Wards with Higher Tree Density
+
+Davenport, Willowdale, University-Rosedale, Parkdale-High Park, and Toronto-St. Paul’s comprise
+the five wards with the most street trees per square kilometer. Parkdale-High Park is the only ward with a sub-six-figure average household income at \$99,784 [@Census]. All five wards are within the top ten average household incomes, and two wards, Toronto-St. Paul’s and University Rosedale are within the top five [@Census]. Toronto-St. Paul’s having an average household income of \$155,470 and University-Rosedale an average of $170,832 [@Census].
+
+## Wards with Higher Large Tree Density
+
+Three of five wards with the greatest density of large trees, Don Valley West, Toronto-St. Paul’s, Etobicoke Centre, are within the top five average household incomes by ward [@Census]. Further, seven of the ten highest average household earning wards are also within the ten wards with the densest large tree cover [@Census].
+
+## Small Tree Density
+The relationship between small tree density and ward income is the least convincing of those examined, with several notable outliers. Davenport’s average household income of \$80,807 is the eleventh lowest of all 25 wards, yet Davenport’s small tree coverage is the third densest at 390.24 per square kilometer [@Census]. Don Valley West, which boasts the city’s highest average household income of \$216,158 has the tenth lowest number of small trees per square kilometer [@Census]. Some of the wealthiest wards, however, namely Toronto St. Paul’s, University-Rosedale, and Eglington-Lawrence, are also among those with the densest small tree coverage [@Census].
+
+\newpage
+
+# Discussion
+The strongest result of this analysis is the apparent relation between high ward income and high prevalence of large street trees. Don Valley West, Toronto-St. Paul’s, Etobicoke Centre, the three wards with the first, fourth, and fifth highest average household incomes respectively, are among the most densely large street tree covered wards in Toronto [@Census]. Nearly all of the highest earning wards are also relatively dense with large street trees. The presence of larger, and therefore likely older, city owned trees in these areas is consistent with the history of government investment into Toronto’s wealthier areas [@Walks]. Repeated patterns of government reinvestment in the city’s downtown neighbourhoods, such as the planting of new street trees or further development transit infrastructure, has widened the gap between these areas and Toronto’s outer suburbs, which include several wards within the Etobicoke and Scarborough regions [@Walks].
+
+Additionally, higher ward income appears related to increased street tree density in general, and to a lesser extent, small street tree density. All five wards with the greatest tree density have average household incomes of near or above $100,000, while just one of the five wards with the lowest tree density, Spadina-Fort York, has an average household income in the six-figures [@Census]. Some of the city’s wealthiest and centrally located wards, Toronto St. Paul’s, University-Rosedale, and Eglington-Lawrence, also contain among the largest numbers of small trees per square kilometer [@Census].  Under the assumption that small trees are likely younger or newly planted, this relationship implies that Toronto’s wealthiest wards continue to receive an influx of city owned street trees. Such reinvestment in already wealthy areas, in the form of new tree planting, has the potential to further widen the infrastructure gap between Toronto’s poorest and wealthiest wards. Redirecting funding for urban tree planting towards poorer communities is one of many avenues that the City of Toronto government could pursue to mitigate growing income disparities in the city. 
+
+These conclusions, however, should be interpreted cautiously as this analysis is purely descriptive and does not contain any evidence for a causal relation between government street tree allocation and neighbourhood wealth. Moreover, the data used omits pertinent information, such as the date age of each street tree and tree’s species, which could be incorporated in further analysis. The results presented here, then, are better suited to encourage further study of Toronto’s forest infrastructure. For instance, the role of city trees in *redlining*, the systematic withholding of public or private investment from marginalized and historically racialized communities, could be considered [@Leahy]. Such analysis is important to promote and justify the reallocation of Toronto’s city trees, a powerful tool for economic, social, and environmental benefit, to the neighborhoods where they will create the largest impact.
+
+\newpage
+
+# Additional Tables
+
+```{r wardnames, fig.cap = "Number of Trunk Diameter Measurements Missing by Ward", echo=FALSE, message=FALSE, warning=FALSE}
+#### Add a Ward Number to Ward Name table in the appendix ####
+ward_trees |>
+  select(ward, ward_name) |>
+  left_join(
+    y = missing_diameter_data,
+    by = "ward"
+  ) |>
+  kable(
+    align = "ll", # left align both columns
+    col.names = c(
+      "Ward Number",
+      "Ward Name",
+      "Number of Diameter Measurements Missing"
+      ),
+    booktabs = TRUE,
+    escape = FALSE,
+    caption = "Number of Trunk Diameter Measurements Missing by Ward"
+  )|>
+  
+  # Adjust font size and fix table in proper position
+  kable_styling(font_size = 10, latex_options = "hold_position")
+```
+
+\newpage
+
+# References
+
